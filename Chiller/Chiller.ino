@@ -4,16 +4,7 @@
 #include <ESP8266WiFi.h>
 #include "Adafruit_MQTT.h"
 #include "Adafruit_MQTT_Client.h"
-
-#define WLAN_SSID       "GetOrfMyWLAN-Guest"
-#define WLAN_PASS       "BobLePonge2020!"
-
-
-#define AIO_SERVER      "mqtt.io.home"
-#define AIO_SERVERPORT  1883
-#define AIO_USERNAME    ""
-#define AIO_KEY         ""
-
+#include "creds.h"
 
 
 #define ONE_WIRE_BUS D4
@@ -156,8 +147,7 @@ bool resetCount(void *) {
   Serial.println(overrideTimer);
   Serial.println("----------");
   Serial.print("Pump Status:");
-  Serial.print(pumpCount);
-  if (pumpStat) {
+  if (digitalRead(PUMP_CTRL)) {
     Serial.println(" ON");
   } else { 
     Serial.println(" OFF");
@@ -308,7 +298,7 @@ void checkSerialBuffer(void) {
       primed = 0;
       displayCount = 0;
       displayPacket = 0;
-      overrideTimer=129;
+      overrideTimer=300;
       done = 1;
     }
     if(byIn == 'A' && !done) {
@@ -331,8 +321,10 @@ void checkSerialBuffer(void) {
 float avgInflow = 0;
 float avgInflowCalc = 0;
 uint8_t avgInflowCount = 0;
+uint8_t pumpStateIdx = 0;
 
 bool mainLoop(void *) {
+  static Adafruit_MQTT_Publish feed3 = Adafruit_MQTT_Publish(&mqtt, "servers/cooling/tankcool");
   static uint8_t mainTick;
   static uint8_t fanPsc;
   mainTick++;
@@ -404,55 +396,54 @@ bool mainLoop(void *) {
       }
       break;
     case 13:
-      pumpCount++;
-      if(pumpCount <= 15) {
-        float diffEvap = postcoolSensorTemp - ambientSensorTemp;
-        if(postcoolSensorTemp > outflowSensorTemp || outflowSensorTemp > inflowSensorTemp || (outflowSensorTemp > 22)) {
-          pumpStat = 1;
-          digitalWrite(PUMP_CTRL, 1);
-          setSpeed(500);
-        } else {
-          pumpStat = 0;
-          digitalWrite(PUMP_CTRL, 0);
-        }
-      } else {
-        pumpStat = 0;
-        digitalWrite(PUMP_CTRL, 0);
-        if(fanPsc++ > 10) {
+      switch(pumpStateIdx) {
+        case 0:
+         if(tankSensorTemp >= 18.75) {
+          feed3.publish("RUN", true);
+          pumpStateIdx = 1;
+         }
+         break;
+         
+        case 1:
           fanPsc = 0;
-          if(avgInflow < 20) {
-            setSpeed(1500);  
+          digitalWrite(PUMP_CTRL, 1);
+          setSpeed(2750);
+          feed3.publish("WAIT", true);
+          pumpStateIdx = 2;
+          break;
+          
+        case 2:
+          fanPsc = 0;
+          if(tankSensorTemp <= 17.75) {
+            pumpStateIdx = 3;
           }
-          if(avgInflow >= 20 && avgInflow < 22) {
-            setSpeed(2000);
-          }
-          if(avgInflow >= 22 && avgInflow < 24) {
-            setSpeed(2500);
-          }
-          if(avgInflow >= 24 && avgInflow < 26) {
-            setSpeed(3500);
-          }
-          if(avgInflow >= 26) {
-            setSpeed(4000);
-          }
+          break;
+          
+       case 3:
+          digitalWrite(PUMP_CTRL, 0);
+          pumpStateIdx = 0;
+          feed3.publish("DONE", true);
+          break;         
+      }
+      if(fanPsc++ > 10) {
+        fanPsc = 0;
+        if(avgInflow < 20) {
+          setSpeed(1500);  
+        }
+        if(avgInflow >= 20 && avgInflow < 22) {
+          setSpeed(2000);
+        }
+        if(avgInflow >= 22 && avgInflow < 24) {
+          setSpeed(2500);
+        }
+        if(avgInflow >= 24 && avgInflow < 26) {
+          setSpeed(3500);
+        }
+        if(avgInflow >= 26) {
+          setSpeed(4000);
         }
       }
-      if(avgInflow <= 23 && pumpCount>=150){
-        pumpCount = 0;
-      }
-      if(avgInflow > 23 && avgInflow < 25 && pumpCount>=60){
-        pumpCount = 0;
-      }
-      if(avgInflow > 24 && avgInflow < 26 && pumpCount>=55){
-        pumpCount = 0;
-      }
-      if(avgInflow > 25 && avgInflow < 27 && pumpCount>=50){
-        pumpCount = 0;
-      }
-      if(avgInflow > 26 && pumpCount>=45){
-        pumpCount = 0;
-      }
-      break;
+      break;  
     default:
       mainTick = 0;
       break;
@@ -468,13 +459,13 @@ void onoffCallback(char *data, uint16_t len) {
     pumpStat=1;
     digitalWrite(PUMP_CTRL, 1);
     pumpCount = 0;
-    overrideTimer=129;
+    overrideTimer=300;
   }
   if(strcmp(data, "OFF") == 0){
     Serial.println("Pump Off");
     pumpStat=0;
     digitalWrite(PUMP_CTRL, 0);
-    overrideTimer=129;
+    overrideTimer=300;
   }
 }
 
@@ -485,7 +476,7 @@ void fanCallback(uint32_t speed) {
   Serial.print("<Fan:");
   Serial.print(speed);
   Serial.println(">");
-  overrideTimer=129;
+  overrideTimer=300;
 }
 
 void setup() {
@@ -515,7 +506,7 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(FAN3_TACH), pinChanged3, RISING);
   spo = getSpeed(2500);
   pinMode(PUMP_CTRL, OUTPUT);   
-  digitalWrite(PUMP_CTRL,1);
+  digitalWrite(PUMP_CTRL,0);
   analogWrite(FAN1_PWM, spo);
   analogWrite(FAN2_PWM, spo);
   analogWrite(FAN3_PWM, spo);
